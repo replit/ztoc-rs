@@ -34,6 +34,7 @@
           inherit src;
 
           buildInputs = [];
+          nativeBuildInputs = [ pkgs.flatbuffers ];
         };
 
         # Build *just* the cargo dependencies, so we can reuse
