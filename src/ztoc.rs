@@ -2,8 +2,10 @@ use std::{
     collections::HashMap,
     io::{self, Read, Result},
     path::PathBuf,
+    str::Utf8Error,
 };
 
+use chrono::NaiveDateTime;
 use tar::Archive;
 
 #[derive(Debug)]
@@ -26,10 +28,14 @@ pub struct FileMetadata {
     pub gid: u64,
     pub uname: Option<String>,
     pub gname: Option<String>,
-    pub mod_time: u64,
+    pub mod_time: NaiveDateTime,
     pub dev_major: Option<u32>,
     pub dev_minor: Option<u32>,
     pub x_attrs: HashMap<String, String>,
+}
+
+fn map_utf8_error(_: Utf8Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8")
 }
 
 impl<R: Read> TryFrom<tar::Entry<'_, R>> for FileMetadata {
@@ -49,14 +55,15 @@ impl<R: Read> TryFrom<tar::Entry<'_, R>> for FileMetadata {
             uname: entry
                 .header()
                 .username()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "uname not UTF-8"))?
+                .map_err(map_utf8_error)?
                 .map(Into::into),
             gname: entry
                 .header()
                 .groupname()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "uname not UTF-8"))?
+                .map_err(map_utf8_error)?
                 .map(Into::into),
-            mod_time: entry.header().mtime()?,
+            mod_time: NaiveDateTime::from_timestamp_opt(entry.header().mtime()? as i64, 0)
+                .ok_or(io::Error::new(io::ErrorKind::InvalidData, "invalid mtime"))?,
             dev_major: None,
             dev_minor: None,
             // lol maybe I went too far...
@@ -66,22 +73,8 @@ impl<R: Read> TryFrom<tar::Entry<'_, R>> for FileMetadata {
                     exts.map(|ext| {
                         ext.and_then(|ext| {
                             Ok((
-                                ext.key()
-                                    .map_err(|_| {
-                                        io::Error::new(
-                                            io::ErrorKind::InvalidData,
-                                            "xattr key not UTF-8",
-                                        )
-                                    })?
-                                    .to_string(),
-                                ext.value()
-                                    .map_err(|_| {
-                                        io::Error::new(
-                                            io::ErrorKind::InvalidData,
-                                            "xattr val not UTF-8",
-                                        )
-                                    })?
-                                    .to_string(),
+                                ext.key().map_err(map_utf8_error)?.to_string(),
+                                ext.value().map_err(map_utf8_error)?.to_string(),
                             ))
                         })
                     })

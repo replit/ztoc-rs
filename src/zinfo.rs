@@ -39,6 +39,7 @@
 
 use std::{
     alloc::{self, Layout},
+    cmp,
     io::{self, Read, Result},
     mem, ptr,
 };
@@ -53,6 +54,7 @@ use libz_sys::{
 const WINSIZE: usize = 32768;
 const CHUNK: usize = 1 << 14;
 
+#[derive(PartialEq, Eq)]
 pub struct GzipCheckpoint {
     pub out: usize,
     pub r#in: usize,
@@ -70,7 +72,7 @@ impl std::fmt::Debug for GzipCheckpoint {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct GzipZinfo {
     pub version: i32,
     pub checkpoints: Vec<GzipCheckpoint>,
@@ -123,11 +125,13 @@ impl ZStream {
         self.stream.data_type
     }
 
+    // TODO: This is really sketchy...
     fn next_in(&mut self, r#in: &mut [u8]) {
         self.stream.avail_in = r#in.len() as u32;
         self.stream.next_in = r#in.as_mut_ptr() as *mut u8;
     }
 
+    // TODO: This is really sketchy...
     fn next_out(&mut self, out: &mut [u8]) {
         self.stream.avail_out = out.len() as u32;
         self.stream.next_out = out.as_mut_ptr() as *mut u8;
@@ -135,6 +139,14 @@ impl ZStream {
 
     fn inflate(&mut self, flush: c_int) -> Result<c_int> {
         check_error(unsafe { inflate(self.stream.as_mut() as *mut z_stream, flush) })
+    }
+}
+
+impl Drop for ZStream {
+    fn drop(&mut self) {
+        unsafe {
+            libz_sys::inflateEnd(self.stream.as_mut() as *mut z_stream);
+        }
     }
 }
 
@@ -233,6 +245,142 @@ pub fn generate_zinfo<R: Read>(reader: &mut R, span_size: usize) -> Result<GzipZ
     })
 }
 
+/// A Gzip decompressor that also generates a
+pub struct GzipZInfoDecompressor<R> {
+    reader: R,
+
+    stream: ZStream,
+    zinfo: GzipZinfo,
+
+    total_in: usize,
+    total_out: usize,
+    window: RingBuffer<u8, WINSIZE>,
+    input: [u8; CHUNK],
+    read_index: usize,
+    last_block: usize,
+}
+
+impl<R> GzipZInfoDecompressor<R>
+where
+    R: Read,
+{
+    pub fn new(reader: R, span_size: usize) -> Result<Self> {
+        let stream = ZStream::new(47)?;
+        let zinfo = GzipZinfo {
+            version: 2,
+            checkpoints: Vec::new(),
+            span_size,
+        };
+
+        Ok(Self {
+            reader,
+            stream,
+            zinfo,
+            total_in: 0,
+            total_out: 0,
+            window: RingBuffer::new(),
+            input: [0u8; CHUNK],
+            read_index: 0,
+            last_block: 0,
+        })
+    }
+
+    /// Returns the gzip index computed so far. The index is complete
+    /// once EOF is reached.
+    pub fn to_zinfo(self) -> GzipZinfo {
+        self.zinfo
+    }
+}
+
+impl<R> Read for GzipZInfoDecompressor<R>
+where
+    R: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.stream.next_out(buf);
+        let mut read = 0;
+
+        while self.stream.available_out() > 0 {
+            if self.stream.available_in() == 0 {
+                let count = self.reader.read(&mut self.input)?;
+                self.stream.next_in(&mut self.input[..count]);
+            }
+
+            self.total_in += self.stream.available_in() as usize;
+            self.total_out += self.stream.available_out() as usize;
+            read += self.stream.available_out() as usize;
+            let status = self.stream.inflate(Z_BLOCK)?;
+            self.total_in -= self.stream.available_in() as usize;
+            self.total_out -= self.stream.available_out() as usize;
+            read -= self.stream.available_out() as usize;
+
+            if status == Z_NEED_DICT {
+                return Err(io::Error::new(io::ErrorKind::Other, "unexpected need dict"));
+            }
+            if status == Z_STREAM_END {
+                return Ok(read);
+            }
+
+            if (self.stream.data_type() & 128) != 0
+                && (self.stream.data_type() & 64) == 0
+                && (self.total_out == 0 || self.total_out - self.last_block > self.zinfo.span_size)
+            {
+                let mut checkpoint = GzipCheckpoint {
+                    bits: (self.stream.data_type() as u8) & 7,
+                    r#in: self.total_in,
+                    out: self.total_out,
+                    window: [0u8; WINSIZE],
+                };
+                let (left, right) = self.window.read();
+                checkpoint.window[..left.len()].copy_from_slice(&left);
+                checkpoint.window[left.len()..].copy_from_slice(&right);
+                self.zinfo.checkpoints.push(checkpoint);
+                self.last_block = self.total_out;
+            }
+        }
+
+        Ok(read)
+    }
+}
+
+struct RingBuffer<T, const N: usize> {
+    buffer: [T; N],
+    index: usize,
+}
+
+impl<T, const N: usize> RingBuffer<T, N>
+where
+    T: Copy + Default,
+{
+    fn new() -> Self {
+        Self {
+            buffer: [T::default(); N],
+            index: 0,
+        }
+    }
+
+    fn write(&mut self, mut buf: &[T]) {
+        if buf.len() == 0 {
+            return;
+        }
+
+        if buf.len() > self.buffer.len() {
+            buf = &buf[buf.len() - self.buffer.len()..];
+        }
+
+        while buf.len() > 0 {
+            let size = cmp::min(buf.len(), self.buffer.len() - self.index);
+            self.buffer[self.index..self.index + size].copy_from_slice(&buf[..size]);
+            buf = &buf[size..];
+            self.index = (self.index + size) % self.buffer.len();
+        }
+    }
+
+    fn read(&self) -> (&[T], &[T]) {
+        (&self.buffer[self.index..], &self.buffer[..self.index])
+    }
+}
+
 const ALIGN: usize = std::mem::align_of::<usize>();
 type AllocSize = uInt;
 
@@ -294,7 +442,35 @@ mod test {
     #[test]
     fn test_generate_zinfo() {
         let mut reader = Cursor::new(include_bytes!("testdata/test.tar.gz"));
-        generate_zinfo(&mut reader, 4096).expect("failed to generate zinfo");
+        let old_info = generate_zinfo(&mut reader, 4096).expect("failed to generate zinfo");
         // TODO: Test with a larger tarball and add assertions on the zinfo index.
+        let mut reader = Cursor::new(include_bytes!("testdata/test.tar.gz"));
+        let mut decoder = GzipZInfoDecompressor::new(&mut reader, 4096).unwrap();
+        let mut buf = [0u8; 1 << 14];
+        while decoder.read(&mut buf).unwrap() > 0 {}
+        let new_info = decoder.to_zinfo();
+        assert_eq!(old_info, new_info);
+    }
+
+    #[test]
+    fn test_ring_buffer() {
+        let mut buffer = RingBuffer::<u8, 100>::new();
+
+        assert_eq!(buffer.read(), ([0u8; 100].as_slice(), [0u8; 0].as_slice()));
+
+        buffer.write(&[1u8; 50]);
+        assert_eq!(buffer.read(), ([0u8; 50].as_slice(), [1u8; 50].as_slice()));
+
+        buffer.write(&[2u8; 50]);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[1u8; 50]);
+        expected.extend_from_slice(&[2u8; 50]);
+        assert_eq!(buffer.read(), (expected.as_slice(), [0u8; 0].as_slice()));
+
+        buffer.write(&[3u8; 150]);
+        assert_eq!(buffer.read(), ([3u8; 100].as_slice(), [0u8; 0].as_slice()));
+
+        buffer.write(&[4u8; 75]);
+        assert_eq!(buffer.read(), ([3u8; 25].as_slice(), [4u8; 75].as_slice()));
     }
 }
