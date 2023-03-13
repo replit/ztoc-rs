@@ -394,7 +394,7 @@ mod test {
         let mut buf = [0u8; 1 << 14];
         while decoder.read(&mut buf).unwrap() > 0 {}
         // TODO: Test with a larger tarball and add assertions on the zinfo index.
-        let new_info = decoder.into_zinfo();
+        let _new_info = decoder.into_zinfo();
     }
 
     #[test]
