@@ -69,7 +69,6 @@ impl From<ZInfo> for CompressionInfo {
             hasher.update(span.window);
             span_digests.push(format!("sha256:{:x}", hasher.finalize()));
 
-            // TODO: Is this the right endianness?
             checkpoints.extend_from_slice(&span.r#in.to_le_bytes());
             checkpoints.extend_from_slice(&span.out.to_le_bytes());
             checkpoints.push(span.bits);
@@ -114,7 +113,6 @@ impl<R: Read> TryFrom<tar::Entry<'_, R>> for FileMetadata {
         let mut meta = FileMetadata {
             name: entry.path()?.into(),
             r#type: entry.header().entry_type(),
-            // TODO: Should this be file or header position?
             uncompressed_offset: CompressionOffset(entry.raw_file_position()),
             uncompressed_size: CompressionOffset(entry.size()),
             link_name: entry.link_name()?.map(Into::into),
