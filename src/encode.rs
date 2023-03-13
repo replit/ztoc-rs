@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use tar::EntryType;
 
 use crate::ztoc_flatbuffers::ztoc::{
@@ -28,9 +28,13 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
     for entry in &ztoc.toc.metadata {
         let name =
             builder.create_string(&entry.name.to_str().expect("unexpected non-UTF 8 encoding"));
-        let linkname = entry.link_name.as_ref().map(|link_name| {
-            builder.create_string(link_name.to_str().expect("unexpected non-UTF 8 encoding"))
-        });
+        let linkname = builder.create_string(
+            entry
+                .link_name
+                .as_ref()
+                .map(|link| link.to_str().expect("unexpected non-UTF 8 encoding"))
+                .unwrap_or_default(),
+        );
         let uname = entry
             .uname
             .as_ref()
@@ -65,7 +69,7 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
                 type_: Some(type_),
                 uncompressed_offset: entry.uncompressed_offset.0 as i64,
                 uncompressed_size: entry.uncompressed_size.0 as i64,
-                linkname,
+                linkname: Some(linkname),
                 mode: entry.mode as i64,
                 uid: entry.uid as u32,
                 gid: entry.gid as u32,
@@ -124,7 +128,9 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
-    use std::fs::{self, File};
+    use std::fs::File;
+
+    use chrono::DateTime;
 
     use crate::{ztoc::ZToc, ztoc_flatbuffers};
 
@@ -156,19 +162,13 @@ mod test {
             decoded_compression_info.max_span_id(),
             expected_compression_info.max_span_id(),
         );
-        fs::write(
-            "checkpoints-actual.bin",
-            decoded_compression_info.checkpoints().unwrap().bytes(),
-        )
-        .unwrap();
-        fs::write(
-            "checkpoints-expected.bin",
-            expected_compression_info.checkpoints().unwrap().bytes(),
-        )
-        .unwrap();
         assert_eq!(
             decoded_compression_info.checkpoints().unwrap().bytes(),
             expected_compression_info.checkpoints().unwrap().bytes(),
+        );
+        assert_eq!(
+            decoded_compression_info.span_digests().unwrap().bytes(),
+            expected_compression_info.span_digests().unwrap().bytes(),
         );
 
         let decoded_toc = decoded.toc().unwrap();
@@ -177,5 +177,39 @@ mod test {
             decoded_toc.metadata().unwrap().len(),
             expected_toc.metadata().unwrap().len(),
         );
+        for (decoded_entry, expected_entry) in decoded_toc
+            .metadata()
+            .unwrap()
+            .into_iter()
+            .zip(expected_toc.metadata().unwrap().into_iter())
+        {
+            let decoded_time =
+                DateTime::parse_from_rfc3339(decoded_entry.mod_time().take().unwrap()).unwrap();
+            let expected_time =
+                DateTime::parse_from_rfc3339(expected_entry.mod_time().take().unwrap()).unwrap();
+            assert_eq!(decoded_time, expected_time);
+            assert_eq!(decoded_entry.name(), expected_entry.name());
+            assert_eq!(decoded_entry.type_(), expected_entry.type_());
+            assert_eq!(
+                decoded_entry.uncompressed_offset(),
+                expected_entry.uncompressed_offset()
+            );
+            assert_eq!(
+                decoded_entry.uncompressed_size(),
+                expected_entry.uncompressed_size()
+            );
+            assert_eq!(decoded_entry.linkname(), expected_entry.linkname());
+            assert_eq!(decoded_entry.mode(), expected_entry.mode());
+            assert_eq!(decoded_entry.uid(), expected_entry.uid());
+            assert_eq!(decoded_entry.gid(), expected_entry.gid());
+            assert_eq!(decoded_entry.uname(), expected_entry.uname());
+            assert_eq!(decoded_entry.gname(), expected_entry.gname());
+            assert_eq!(decoded_entry.devmajor(), expected_entry.devmajor());
+            assert_eq!(decoded_entry.devminor(), expected_entry.devminor());
+            assert_eq!(
+                decoded_entry.xattrs().unwrap().bytes(),
+                expected_entry.xattrs().unwrap().bytes()
+            );
+        }
     }
 }
