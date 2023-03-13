@@ -9,7 +9,7 @@ use chrono::NaiveDateTime;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-use crate::zinfo::{GzipZInfoDecompressor, GzipZinfo};
+use crate::zinfo::{GzipZInfoDecompressor, ZInfo};
 
 #[derive(Debug)]
 pub struct CompressionOffset(pub u64);
@@ -62,8 +62,8 @@ pub struct CompressionInfo {
     pub checkpoints: Vec<u8>,
 }
 
-impl From<GzipZinfo> for CompressionInfo {
-    fn from(zinfo: GzipZinfo) -> Self {
+impl From<ZInfo> for CompressionInfo {
+    fn from(zinfo: ZInfo) -> Self {
         let mut span_digests = Vec::with_capacity(zinfo.checkpoints.len());
         let mut checkpoints = Vec::new();
 

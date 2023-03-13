@@ -58,14 +58,14 @@ const CHUNK: usize = 1 << 14;
 /// locations in the compressed payload. Decompression can be resumed at any checkpoint, using the
 /// context stored in the checkpoint, without requiring decompressing the rest of the payload.
 #[derive(PartialEq, Eq)]
-pub struct GzipCheckpoint {
+pub struct GZipCheckpoint {
     pub out: usize,
     pub r#in: usize,
     pub bits: u8,
     pub window: [u8; WINSIZE],
 }
 
-impl std::fmt::Debug for GzipCheckpoint {
+impl std::fmt::Debug for GZipCheckpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GzipCheckout")
             .field("out", &self.out)
@@ -78,9 +78,9 @@ impl std::fmt::Debug for GzipCheckpoint {
 /// Information about the compressed payload. Includes checkpoints which allow for quickly
 /// decompressing subets of the compressed payload.
 #[derive(Debug, PartialEq, Eq)]
-pub struct GzipZinfo {
+pub struct ZInfo {
     pub version: i32,
-    pub checkpoints: Vec<GzipCheckpoint>,
+    pub checkpoints: Vec<GZipCheckpoint>,
     pub span_size: usize,
 }
 
@@ -183,7 +183,7 @@ pub struct GzipZInfoDecompressor<R> {
     reader: R,
 
     stream: ZStream,
-    zinfo: GzipZinfo,
+    zinfo: ZInfo,
 
     total_in: usize,
     total_out: usize,
@@ -200,7 +200,7 @@ where
     /// recording in the zinfo.
     pub fn new(reader: R, span_size: usize) -> Result<Self> {
         let stream = ZStream::new(47)?;
-        let zinfo = GzipZinfo {
+        let zinfo = ZInfo {
             version: 2,
             checkpoints: Vec::new(),
             span_size,
@@ -220,7 +220,7 @@ where
 
     /// Consumes the decompressor to return the zinfo compression metadata. The index is only complete
     /// once EOF is reached.
-    pub fn to_zinfo(self) -> (GzipZinfo, R) {
+    pub fn to_zinfo(self) -> (ZInfo, R) {
         (self.zinfo, self.reader)
     }
 }
@@ -258,7 +258,7 @@ where
                 && (self.stream.data_type() & 64) == 0
                 && (self.total_out == 0 || self.total_out - self.last_block > self.zinfo.span_size)
             {
-                let mut checkpoint = GzipCheckpoint {
+                let mut checkpoint = GZipCheckpoint {
                     bits: (self.stream.data_type() as u8) & 7,
                     r#in: self.total_in,
                     out: self.total_out,
