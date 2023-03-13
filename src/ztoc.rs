@@ -12,7 +12,7 @@ use tar::Archive;
 use crate::zinfo::{GzipZInfoDecompressor, GzipZinfo};
 
 #[derive(Debug)]
-pub struct CompressionOffset(u64);
+pub struct CompressionOffset(pub u64);
 
 #[derive(Debug)]
 pub struct ZToc {
