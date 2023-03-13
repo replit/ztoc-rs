@@ -4,7 +4,7 @@ mod encode;
 mod zinfo;
 mod ztoc;
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, unused_imports, clippy::all)]
 #[path = "../target/flatbuffers/ztoc_generated.rs"]
 pub mod ztoc_flatbuffers;
 

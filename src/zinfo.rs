@@ -220,7 +220,7 @@ where
 
     /// Consumes the decompressor to return the zinfo compression metadata. The index is only complete
     /// once EOF is reached.
-    pub fn to_zinfo(self) -> ZInfo {
+    pub fn into_zinfo(self) -> ZInfo {
         self.zinfo
     }
 }
@@ -274,8 +274,8 @@ where
                     window: [0u8; WINSIZE],
                 };
                 let (left, right) = self.window.read();
-                checkpoint.window[..left.len()].copy_from_slice(&left);
-                checkpoint.window[left.len()..].copy_from_slice(&right);
+                checkpoint.window[..left.len()].copy_from_slice(left);
+                checkpoint.window[left.len()..].copy_from_slice(right);
                 self.zinfo.checkpoints.push(checkpoint);
                 self.last_block = self.zinfo.total_out;
             }
@@ -305,7 +305,7 @@ where
 
     /// Writes the buffer to the back of the ring buffer.
     fn write(&mut self, mut buf: &[T]) {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return;
         }
 
@@ -313,7 +313,7 @@ where
             buf = &buf[buf.len() - self.buffer.len()..];
         }
 
-        while buf.len() > 0 {
+        while !buf.is_empty() {
             let size = cmp::min(buf.len(), self.buffer.len() - self.index);
             self.buffer[self.index..self.index + size].copy_from_slice(&buf[..size]);
             buf = &buf[size..];
@@ -394,7 +394,7 @@ mod test {
         let mut buf = [0u8; 1 << 14];
         while decoder.read(&mut buf).unwrap() > 0 {}
         // TODO: Test with a larger tarball and add assertions on the zinfo index.
-        let new_info = decoder.to_zinfo();
+        let new_info = decoder.into_zinfo();
     }
 
     #[test]

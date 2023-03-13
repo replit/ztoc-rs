@@ -36,7 +36,7 @@ impl ZToc {
         // Ensure we read the rest.
         let mut buf = [0u8; 1 << 10];
         while decompressor.read(&mut buf)? > 0 {}
-        let zinfo = decompressor.to_zinfo();
+        let zinfo = decompressor.into_zinfo();
 
         Ok(ZToc {
             version: String::from("0.9"),
@@ -66,7 +66,7 @@ impl From<ZInfo> for CompressionInfo {
 
         for span in &zinfo.checkpoints {
             let mut hasher = Sha256::new();
-            hasher.update(&span.window);
+            hasher.update(span.window);
             span_digests.push(format!("sha256:{:x}", hasher.finalize()));
 
             // TODO: Is this the right endianness?

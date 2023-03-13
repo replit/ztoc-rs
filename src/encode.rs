@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use tar::EntryType;
 
 use crate::ztoc_flatbuffers::ztoc::{
@@ -27,7 +27,7 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
     let mut metadata = Vec::with_capacity(ztoc.toc.metadata.len());
     for entry in &ztoc.toc.metadata {
         let name =
-            builder.create_string(&entry.name.to_str().expect("unexpected non-UTF 8 encoding"));
+            builder.create_string(entry.name.to_str().expect("unexpected non-UTF 8 encoding"));
         let linkname = builder.create_string(
             entry
                 .link_name
