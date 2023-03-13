@@ -44,7 +44,6 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
             .as_ref()
             .map(|gname| builder.create_string(gname));
         let type_ = builder.create_string(entry_to_string(&entry.r#type));
-        // Convert mod_time to DateTime
         let mod_time =
             builder.create_string(&entry.mod_time.and_local_timezone(Utc).unwrap().to_rfc3339());
 
