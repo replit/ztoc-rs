@@ -233,7 +233,7 @@ mod test {
 
     #[test]
     fn test_generate_full() {
-        let reader = Cursor::new(include_bytes!("testdata/layer.tar.gz"));
+        let reader = Cursor::new(include_bytes!("testdata/test.tar.gz"));
         let mut decompressor = GzipZInfoDecompressor::new(reader, 4096).unwrap();
         let meta =
             generate_tar_metadata(&mut decompressor).expect("failed to generate tar metadata");
