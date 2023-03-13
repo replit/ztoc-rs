@@ -82,6 +82,8 @@ pub struct ZInfo {
     pub version: i32,
     pub checkpoints: Vec<GZipCheckpoint>,
     pub span_size: usize,
+    pub total_in: usize,
+    pub total_out: usize,
 }
 
 /// A wrapper around the underlying [`z_stream`].
@@ -185,8 +187,6 @@ pub struct GzipZInfoDecompressor<R> {
     stream: ZStream,
     zinfo: ZInfo,
 
-    total_in: usize,
-    total_out: usize,
     window: RingBuffer<u8, WINSIZE>,
     input: [u8; CHUNK],
     last_block: usize,
@@ -204,14 +204,14 @@ where
             version: 2,
             checkpoints: Vec::new(),
             span_size,
+            total_in: 0,
+            total_out: 0,
         };
 
         Ok(Self {
             reader,
             stream,
             zinfo,
-            total_in: 0,
-            total_out: 0,
             window: RingBuffer::new(),
             input: [0u8; CHUNK],
             last_block: 0,
@@ -220,8 +220,8 @@ where
 
     /// Consumes the decompressor to return the zinfo compression metadata. The index is only complete
     /// once EOF is reached.
-    pub fn to_zinfo(self) -> (ZInfo, R) {
-        (self.zinfo, self.reader)
+    pub fn to_zinfo(self) -> ZInfo {
+        self.zinfo
     }
 }
 
@@ -239,14 +239,14 @@ where
                 self.stream.next_in(&mut self.input[..count]);
             }
 
-            self.total_in += self.stream.available_in() as usize;
-            self.total_out += self.stream.available_out() as usize;
+            let last_read = read;
+            self.zinfo.total_in += self.stream.available_in() as usize;
+            self.zinfo.total_out += self.stream.available_out() as usize;
             read += self.stream.available_out() as usize;
             let status = self.stream.inflate(Z_BLOCK)?;
-            self.total_in -= self.stream.available_in() as usize;
-            self.total_out -= self.stream.available_out() as usize;
+            self.zinfo.total_in -= self.stream.available_in() as usize;
+            self.zinfo.total_out -= self.stream.available_out() as usize;
             read -= self.stream.available_out() as usize;
-
             if status == Z_NEED_DICT {
                 return Err(io::Error::new(io::ErrorKind::Other, "unexpected need dict"));
             }
@@ -254,21 +254,26 @@ where
                 return Ok(read);
             }
 
+            // Copy the read data into the sliding window.
+            self.window
+                .write(&buf[last_read..buf.len() - self.stream.available_out() as usize]);
+
             if (self.stream.data_type() & 128) != 0
                 && (self.stream.data_type() & 64) == 0
-                && (self.total_out == 0 || self.total_out - self.last_block > self.zinfo.span_size)
+                && (self.zinfo.total_out == 0
+                    || self.zinfo.total_out - self.last_block > self.zinfo.span_size)
             {
                 let mut checkpoint = GZipCheckpoint {
                     bits: (self.stream.data_type() as u8) & 7,
-                    r#in: self.total_in,
-                    out: self.total_out,
+                    r#in: self.zinfo.total_in,
+                    out: self.zinfo.total_out,
                     window: [0u8; WINSIZE],
                 };
                 let (left, right) = self.window.read();
                 checkpoint.window[..left.len()].copy_from_slice(&left);
                 checkpoint.window[left.len()..].copy_from_slice(&right);
                 self.zinfo.checkpoints.push(checkpoint);
-                self.last_block = self.total_out;
+                self.last_block = self.zinfo.total_out;
             }
         }
 

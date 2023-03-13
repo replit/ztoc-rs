@@ -30,25 +30,19 @@ impl ZToc {
         R: Read,
     {
         // TODO: Make this configurable.
-        let span_size = 1 << 2; // 4MiB
-        let compressed_length_reader = LengthReader::new(reader);
-        let decompressor = GzipZInfoDecompressor::new(compressed_length_reader, span_size)?;
-        let mut uncompressed_length_reader = LengthReader::new(decompressor);
-        let toc = generate_tar_metadata(&mut uncompressed_length_reader)?;
-
-        // Unwrap all the readers so we can get their results...
-        // TODO: There might be a better way to accomplish this.
-        let uncompressed_archive_size =
-            CompressionOffset(uncompressed_length_reader.length() as u64);
-        let decompressor = uncompressed_length_reader.to_inner();
-        let (zinfo, compressed_length_reader) = decompressor.to_zinfo();
-        let compressed_achrive_size = CompressionOffset(compressed_length_reader.length() as u64);
+        let span_size = 1 << 22; // 4MiB
+        let mut decompressor = GzipZInfoDecompressor::new(reader, span_size)?;
+        let toc = generate_tar_metadata(&mut decompressor)?;
+        // Ensure we read the rest.
+        let mut buf = [0u8; 1 << 10];
+        while decompressor.read(&mut buf)? > 0 {}
+        let zinfo = decompressor.to_zinfo();
 
         Ok(ZToc {
             version: String::from("0.9"),
             build_tool_identifier: String::from("Replit SOCI v0.1"),
-            compressed_achrive_size,
-            uncompressed_archive_size,
+            compressed_achrive_size: CompressionOffset(zinfo.total_in as u64),
+            uncompressed_archive_size: CompressionOffset(zinfo.total_out as u64),
             toc,
             compression_info: zinfo.into(),
         })
@@ -67,14 +61,17 @@ impl From<ZInfo> for CompressionInfo {
         let mut span_digests = Vec::with_capacity(zinfo.checkpoints.len());
         let mut checkpoints = Vec::new();
 
+        checkpoints.extend_from_slice(&(zinfo.checkpoints.len() as u32).to_le_bytes());
+        checkpoints.extend_from_slice(&(zinfo.span_size as u64).to_le_bytes());
+
         for span in &zinfo.checkpoints {
             let mut hasher = Sha256::new();
             hasher.update(&span.window);
             span_digests.push(format!("sha256:{:x}", hasher.finalize()));
 
             // TODO: Is this the right endianness?
-            checkpoints.extend_from_slice(&span.r#in.to_be_bytes());
-            checkpoints.extend_from_slice(&span.out.to_be_bytes());
+            checkpoints.extend_from_slice(&span.r#in.to_le_bytes());
+            checkpoints.extend_from_slice(&span.out.to_le_bytes());
             checkpoints.push(span.bits);
             checkpoints.extend_from_slice(&span.window);
         }
@@ -177,35 +174,6 @@ fn generate_tar_metadata<R: Read>(reader: &mut R) -> Result<Toc> {
     Ok(Toc { metadata })
 }
 
-/// A wrapper around a reader which records the total number of bytes read.
-struct LengthReader<R> {
-    reader: R,
-    length: usize,
-}
-
-impl<R> LengthReader<R> {
-    fn new(reader: R) -> Self {
-        Self { reader, length: 0 }
-    }
-    fn length(&self) -> usize {
-        self.length
-    }
-    fn to_inner(self) -> R {
-        self.reader
-    }
-}
-
-impl<R> Read for LengthReader<R>
-where
-    R: Read,
-{
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let read = self.reader.read(buf)?;
-        self.length += read;
-        Ok(read)
-    }
-}
-
 fn map_utf8_error(_: Utf8Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8")
 }
@@ -244,6 +212,5 @@ mod test {
                 .map(|m| m.name.to_str().unwrap())
                 .collect::<Vec<&str>>(),
         );
-        dbg!(decompressor.to_zinfo());
     }
 }

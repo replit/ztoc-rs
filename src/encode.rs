@@ -121,3 +121,61 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
 
     builder.finished_data().to_vec()
 }
+
+#[cfg(test)]
+mod test {
+    use std::fs::{self, File};
+
+    use crate::{ztoc::ZToc, ztoc_flatbuffers};
+
+    use super::encode_ztoc;
+
+    #[test]
+    fn test_compare_soci_snapshotter() {
+        let layer = File::open("./src/testdata/layer.tar.gz").unwrap();
+        let ztoc = ZToc::new(layer).unwrap();
+        let encoded = encode_ztoc(&ztoc);
+
+        let decoded = ztoc_flatbuffers::ztoc::root_as_ztoc(&encoded).unwrap();
+        let expected =
+            ztoc_flatbuffers::ztoc::root_as_ztoc(include_bytes!("testdata/expected")).unwrap();
+
+        assert_eq!(decoded.version(), expected.version());
+        assert_eq!(
+            decoded.compressed_archive_size(),
+            expected.compressed_archive_size()
+        );
+        assert_eq!(
+            decoded.uncompressed_archive_size(),
+            expected.uncompressed_archive_size()
+        );
+
+        let decoded_compression_info = decoded.compression_info().unwrap();
+        let expected_compression_info = expected.compression_info().unwrap();
+        assert_eq!(
+            decoded_compression_info.max_span_id(),
+            expected_compression_info.max_span_id(),
+        );
+        fs::write(
+            "checkpoints-actual.bin",
+            decoded_compression_info.checkpoints().unwrap().bytes(),
+        )
+        .unwrap();
+        fs::write(
+            "checkpoints-expected.bin",
+            expected_compression_info.checkpoints().unwrap().bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            decoded_compression_info.checkpoints().unwrap().bytes(),
+            expected_compression_info.checkpoints().unwrap().bytes(),
+        );
+
+        let decoded_toc = decoded.toc().unwrap();
+        let expected_toc = expected.toc().unwrap();
+        assert_eq!(
+            decoded_toc.metadata().unwrap().len(),
+            expected_toc.metadata().unwrap().len(),
+        );
+    }
+}
