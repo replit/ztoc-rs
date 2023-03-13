@@ -139,14 +139,14 @@ impl ZStream {
 
     /// Sets the input buffer that the stream will read from.
     // TODO: This is really sketchy, we are not following ownership rules properly...
-    fn next_in(&mut self, r#in: &mut [u8]) {
+    unsafe fn next_in(&mut self, r#in: &mut [u8]) {
         self.stream.avail_in = r#in.len() as u32;
         self.stream.next_in = r#in.as_mut_ptr() as *mut u8;
     }
 
     /// Sets the output butter that the stream will write to.
     // TODO: This is really sketchy, we are not following ownership rules properly...
-    fn next_out(&mut self, out: &mut [u8]) {
+    unsafe fn next_out(&mut self, out: &mut [u8]) {
         self.stream.avail_out = out.len() as u32;
         self.stream.next_out = out.as_mut_ptr() as *mut u8;
     }
@@ -230,13 +230,17 @@ where
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.stream.next_out(buf);
+        unsafe {
+            self.stream.next_out(buf);
+        }
         let mut read = 0;
 
         while self.stream.available_out() > 0 {
             if self.stream.available_in() == 0 {
                 let count = self.reader.read(&mut self.input)?;
-                self.stream.next_in(&mut self.input[..count]);
+                unsafe {
+                    self.stream.next_in(&mut self.input[..count]);
+                }
             }
 
             let last_read = read;
