@@ -54,6 +54,9 @@ use libz_sys::{
 const WINSIZE: usize = 32768;
 const CHUNK: usize = 1 << 14;
 
+/// A checkpoint includes information about the current state of the decompressor at specific
+/// locations in the compressed payload. Decompression can be resumed at any checkpoint, using the
+/// context stored in the checkpoint, without requiring decompressing the rest of the payload.
 #[derive(PartialEq, Eq)]
 pub struct GzipCheckpoint {
     pub out: usize,
@@ -72,6 +75,8 @@ impl std::fmt::Debug for GzipCheckpoint {
     }
 }
 
+/// Information about the compressed payload. Includes checkpoints which allow for quickly
+/// decompressing subets of the compressed payload.
 #[derive(Debug, PartialEq, Eq)]
 pub struct GzipZinfo {
     pub version: i32,
@@ -79,11 +84,13 @@ pub struct GzipZinfo {
     pub span_size: usize,
 }
 
+/// A wrapper around the underlying [`z_stream`].
 struct ZStream {
     stream: Box<z_stream>,
 }
 
 impl ZStream {
+    /// Initializes a new ZStream used for inflating.
     fn new(window_bits: c_int) -> Result<Self> {
         let mut stream = Box::new(z_stream {
             next_in: ptr::null_mut(),
@@ -113,30 +120,37 @@ impl ZStream {
         Ok(Self { stream })
     }
 
+    /// Returns the amount of bytes available for the stream to read from the input buffer.
     fn available_in(&self) -> u32 {
         self.stream.avail_in
     }
 
+    /// Returns the amount of bytes available for the stream to write to in the output buffer.
     fn available_out(&self) -> u32 {
         self.stream.avail_out
     }
 
+    /// Returns the current data type of the stream.
     fn data_type(&self) -> i32 {
         self.stream.data_type
     }
 
-    // TODO: This is really sketchy...
+    /// Sets the input buffer that the stream will read from.
+    // TODO: This is really sketchy, we are not following ownership rules properly...
     fn next_in(&mut self, r#in: &mut [u8]) {
         self.stream.avail_in = r#in.len() as u32;
         self.stream.next_in = r#in.as_mut_ptr() as *mut u8;
     }
 
-    // TODO: This is really sketchy...
+    /// Sets the output butter that the stream will write to.
+    // TODO: This is really sketchy, we are not following ownership rules properly...
     fn next_out(&mut self, out: &mut [u8]) {
         self.stream.avail_out = out.len() as u32;
         self.stream.next_out = out.as_mut_ptr() as *mut u8;
     }
 
+    /// Inflates the next part of the stream. Input will be read from the input buffer and output
+    /// will be placed into the output buffer.
     fn inflate(&mut self, flush: c_int) -> Result<c_int> {
         check_error(unsafe { inflate(self.stream.as_mut() as *mut z_stream, flush) })
     }
@@ -150,6 +164,7 @@ impl Drop for ZStream {
     }
 }
 
+/// A helper to convert zlib errors into [`io::Error`]s.
 fn check_error(ret: c_int) -> Result<c_int> {
     match ret {
         Z_STREAM_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib stream error")),
@@ -162,90 +177,8 @@ fn check_error(ret: c_int) -> Result<c_int> {
     }
 }
 
-pub fn generate_zinfo<R: Read>(reader: &mut R, span_size: usize) -> Result<GzipZinfo> {
-    // window is a ring buffer storing the last WINSIZE output.
-    let mut window = [0u8; WINSIZE];
-    let mut input = [0u8; CHUNK];
-    let mut stream = ZStream::new(47)?;
-    let mut total_in: usize = 0;
-    let mut total_out: usize = 0;
-    let mut last: usize = 0;
-
-    let mut checkpoints = Vec::new();
-
-    'OUTER: loop {
-        let read = reader.read(&mut input)?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF when reading zstream input",
-            ));
-        }
-        stream.next_in(&mut input[..read]);
-
-        loop {
-            // Wrap back to the front of the window.
-            if stream.available_out() == 0 {
-                stream.next_out(&mut window);
-            }
-
-            total_in += stream.available_in() as usize;
-            total_out += stream.available_out() as usize;
-            let ret = stream.inflate(Z_BLOCK)?;
-            total_in -= stream.available_in() as usize;
-            total_out -= stream.available_out() as usize;
-            if ret == Z_NEED_DICT {
-                return Err(io::Error::new(io::ErrorKind::Other, "unexpected need dict"));
-            }
-            if ret == Z_STREAM_END {
-                break 'OUTER;
-            }
-
-            if (stream.data_type() & 128) != 0
-                && (stream.data_type() & 64) == 0
-                && (total_out == 0 || total_out - last > span_size)
-            {
-                let mut checkpoint = GzipCheckpoint {
-                    bits: (stream.data_type() as u8) & 7,
-                    r#in: total_in,
-                    out: total_out,
-                    window: [0u8; WINSIZE],
-                };
-                // Copy the end of the window.
-                if stream.available_out() > 0 {
-                    // Here, we need to copy the back end of the window to the front of the
-                    // checkpoint.
-                    checkpoint.window[..stream.available_out() as usize]
-                        .copy_from_slice(&window[(WINSIZE - stream.available_out() as usize)..]);
-                }
-                // Copy the front of the window.
-                if (stream.available_out() as usize) < WINSIZE {
-                    // Here, we need to copy the front end of the window to the back of the
-                    // checkpoint.
-                    checkpoint.window[stream.available_out() as usize..]
-                        .copy_from_slice(&window[..(WINSIZE - stream.available_out() as usize)]);
-                }
-                checkpoints.push(checkpoint);
-                last = total_out;
-            }
-
-            if stream.available_in() == 0 {
-                break;
-            }
-        }
-    }
-
-    dbg!(total_out);
-    dbg!(total_in);
-
-    Ok(GzipZinfo {
-        version: 2,
-        checkpoints,
-        span_size,
-    })
-}
-
-/// A Gzip decompressor that also generates a
+/// A Gzip decompressor that also generates compression metadata which can be used to read
+/// parts of the compressed payload without needing to decompress everything.
 pub struct GzipZInfoDecompressor<R> {
     reader: R,
 
@@ -256,7 +189,6 @@ pub struct GzipZInfoDecompressor<R> {
     total_out: usize,
     window: RingBuffer<u8, WINSIZE>,
     input: [u8; CHUNK],
-    read_index: usize,
     last_block: usize,
 }
 
@@ -264,6 +196,8 @@ impl<R> GzipZInfoDecompressor<R>
 where
     R: Read,
 {
+    /// Creates a new Gzip zinfo Decompressor. The span size specifies the minimum size of a span
+    /// recording in the zinfo.
     pub fn new(reader: R, span_size: usize) -> Result<Self> {
         let stream = ZStream::new(47)?;
         let zinfo = GzipZinfo {
@@ -280,15 +214,14 @@ where
             total_out: 0,
             window: RingBuffer::new(),
             input: [0u8; CHUNK],
-            read_index: 0,
             last_block: 0,
         })
     }
 
-    /// Returns the gzip index computed so far. The index is complete
+    /// Consumes the decompressor to return the zinfo compression metadata. The index is only complete
     /// once EOF is reached.
-    pub fn to_zinfo(self) -> GzipZinfo {
-        self.zinfo
+    pub fn to_zinfo(self) -> (GzipZinfo, R) {
+        (self.zinfo, self.reader)
     }
 }
 
@@ -343,6 +276,7 @@ where
     }
 }
 
+/// A fixed-size ring buffer. Writes are pushed onto the back of the buffer.
 struct RingBuffer<T, const N: usize> {
     buffer: [T; N],
     index: usize,
@@ -352,6 +286,7 @@ impl<T, const N: usize> RingBuffer<T, N>
 where
     T: Copy + Default,
 {
+    /// Creates a new ring buffer.
     fn new() -> Self {
         Self {
             buffer: [T::default(); N],
@@ -359,6 +294,7 @@ where
         }
     }
 
+    /// Writes the buffer to the back of the ring buffer.
     fn write(&mut self, mut buf: &[T]) {
         if buf.len() == 0 {
             return;
@@ -376,6 +312,9 @@ where
         }
     }
 
+    /// Gets the contents of the ring buffer. The underlying storage may be non-contiguous, so
+    /// two slices are returned instead. The left slice is the front and the right slice is the
+    /// back.
     fn read(&self) -> (&[T], &[T]) {
         (&self.buffer[self.index..], &self.buffer[..self.index])
     }
@@ -442,14 +381,11 @@ mod test {
     #[test]
     fn test_generate_zinfo() {
         let mut reader = Cursor::new(include_bytes!("testdata/test.tar.gz"));
-        let old_info = generate_zinfo(&mut reader, 4096).expect("failed to generate zinfo");
-        // TODO: Test with a larger tarball and add assertions on the zinfo index.
-        let mut reader = Cursor::new(include_bytes!("testdata/test.tar.gz"));
         let mut decoder = GzipZInfoDecompressor::new(&mut reader, 4096).unwrap();
         let mut buf = [0u8; 1 << 14];
         while decoder.read(&mut buf).unwrap() > 0 {}
+        // TODO: Test with a larger tarball and add assertions on the zinfo index.
         let new_info = decoder.to_zinfo();
-        assert_eq!(old_info, new_info);
     }
 
     #[test]
