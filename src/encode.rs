@@ -1,13 +1,30 @@
-use flatbuffers::ForwardsUOffset;
+use chrono::Utc;
+use tar::EntryType;
 
-use crate::ztoc_flatbuffers::ztoc::{FileMetadata, FileMetadataArgs, TOCArgs, Ztoc, ZtocArgs, TOC};
+use crate::ztoc_flatbuffers::ztoc::{
+    CompressionAlgorithm, CompressionInfo, CompressionInfoArgs, FileMetadata, FileMetadataArgs,
+    TOCArgs, Xattr, XattrArgs, Ztoc, ZtocArgs, TOC,
+};
+
+fn entry_to_string(entry: &EntryType) -> &'static str {
+    match entry {
+        EntryType::Regular => "reg",
+        EntryType::Link => "hardlink",
+        EntryType::Symlink => "symlink",
+        EntryType::Char => "char",
+        EntryType::Block => "block",
+        EntryType::Directory => "dir",
+        EntryType::Fifo => "fifo",
+        _ => unimplemented!("Unexpected entry type {:?}", entry),
+    }
+}
 
 pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
     let version = builder.create_string(&ztoc.version);
     let build_tool_identifier = builder.create_string(&ztoc.build_tool_identifier);
 
-    builder.start_vector::<ForwardsUOffset<FileMetadata>>(ztoc.toc.metadata.len());
+    let mut metadata = Vec::with_capacity(ztoc.toc.metadata.len());
     for entry in &ztoc.toc.metadata {
         let name =
             builder.create_string(&entry.name.to_str().expect("unexpected non-UTF 8 encoding"));
@@ -22,11 +39,30 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
             .gname
             .as_ref()
             .map(|gname| builder.create_string(gname));
-        let entry = FileMetadata::create(
+        let type_ = builder.create_string(entry_to_string(&entry.r#type));
+        // Convert mod_time to DateTime
+        let mod_time =
+            builder.create_string(&entry.mod_time.and_local_timezone(Utc).unwrap().to_rfc3339());
+
+        let mut xattrs = Vec::with_capacity(entry.x_attrs.len());
+        for (key, value) in &entry.x_attrs {
+            let key = builder.create_string(key);
+            let value = builder.create_string(value);
+            xattrs.push(Xattr::create(
+                &mut builder,
+                &XattrArgs {
+                    key: Some(key),
+                    value: Some(value),
+                },
+            ))
+        }
+        let xattrs = builder.create_vector(&xattrs);
+
+        metadata.push(FileMetadata::create(
             &mut builder,
             &FileMetadataArgs {
                 name: Some(name),
-                type_: todo!(),
+                type_: Some(type_),
                 uncompressed_offset: entry.uncompressed_offset.0 as i64,
                 uncompressed_size: entry.uncompressed_size.0 as i64,
                 linkname,
@@ -35,20 +71,38 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
                 gid: entry.gid as u32,
                 uname,
                 gname,
-                mod_time: todo!(),
+                mod_time: Some(mod_time),
                 devmajor: entry.dev_minor.unwrap_or_default() as i64,
                 devminor: entry.dev_major.unwrap_or_default() as i64,
-                xattrs: todo!(),
+                xattrs: Some(xattrs),
             },
-        );
-        builder.push(entry);
+        ));
     }
 
-    let metadata = builder.end_vector(ztoc.toc.metadata.len());
+    let metadata = builder.create_vector(&metadata);
     let toc = TOC::create(
         &mut builder,
         &TOCArgs {
             metadata: Some(metadata),
+        },
+    );
+
+    let span_digests = ztoc
+        .compression_info
+        .span_digests
+        .iter()
+        .map(|digest| builder.create_string(digest))
+        .collect::<Vec<_>>();
+    let span_digests = builder.create_vector(&span_digests);
+    let checkpoints = builder.create_vector(&ztoc.compression_info.checkpoints);
+
+    let compression_info = CompressionInfo::create(
+        &mut builder,
+        &CompressionInfoArgs {
+            compression_algorithm: CompressionAlgorithm::Gzip,
+            max_span_id: ztoc.compression_info.max_span_id as i32,
+            span_digests: Some(span_digests),
+            checkpoints: Some(checkpoints),
         },
     );
 
@@ -60,7 +114,7 @@ pub fn encode_ztoc(ztoc: &crate::ztoc::ZToc) -> Vec<u8> {
             compressed_archive_size: ztoc.compressed_achrive_size.0 as i64,
             uncompressed_archive_size: ztoc.uncompressed_archive_size.0 as i64,
             toc: Some(toc),
-            compression_info: todo!(),
+            compression_info: Some(compression_info),
         },
     );
     builder.finish(ztoc, None);

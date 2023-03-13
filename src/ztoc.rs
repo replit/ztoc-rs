@@ -25,7 +25,7 @@ pub struct ZToc {
 }
 
 impl ZToc {
-    fn new<R>(reader: R) -> Result<ZToc>
+    pub fn new<R>(reader: R) -> Result<ZToc>
     where
         R: Read,
     {

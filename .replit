@@ -1,6 +1,9 @@
 run = "cargo test"
 hidden = ["target"]
 
+[env]
+CARGO_HOME="/home/runner/${REPL_SLUG}/.cargo"
+
 [packager]
 language = "rust"
 
