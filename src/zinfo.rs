@@ -40,6 +40,7 @@
 use std::{
     alloc::{self, Layout},
     cmp,
+    ffi::{CStr, CString},
     io::{self, Read, Result},
     mem, ptr,
 };
@@ -110,14 +111,17 @@ impl ZStream {
             zalloc,
             zfree,
         });
-        check_error(unsafe {
-            inflateInit2_(
-                stream.as_mut() as *mut z_stream,
-                window_bits,
-                zlibVersion(),
-                mem::size_of::<z_stream>() as c_int,
-            )
-        })?;
+        check_error(
+            unsafe {
+                inflateInit2_(
+                    stream.as_mut() as *mut z_stream,
+                    window_bits,
+                    zlibVersion(),
+                    mem::size_of::<z_stream>() as c_int,
+                )
+            },
+            None,
+        )?;
 
         Ok(Self { stream })
     }
@@ -154,7 +158,10 @@ impl ZStream {
     /// Inflates the next part of the stream. Input will be read from the input buffer and output
     /// will be placed into the output buffer.
     fn inflate(&mut self, flush: c_int) -> Result<c_int> {
-        check_error(unsafe { inflate(self.stream.as_mut() as *mut z_stream, flush) })
+        check_error(
+            unsafe { inflate(self.stream.as_mut() as *mut z_stream, flush) },
+            Some(&self.stream),
+        )
     }
 }
 
@@ -167,14 +174,39 @@ impl Drop for ZStream {
 }
 
 /// A helper to convert zlib errors into [`io::Error`]s.
-fn check_error(ret: c_int) -> Result<c_int> {
+fn check_error(ret: c_int, stream: Option<&z_stream>) -> Result<c_int> {
+    let msg = stream.and_then(|stream| {
+        if !stream.msg.is_null() {
+            Some(unsafe { CStr::from_ptr(stream.msg).to_string_lossy().to_string() })
+        } else {
+            None
+        }
+    });
     match ret {
-        Z_STREAM_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib stream error")),
-        Z_DATA_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib data error")),
-        Z_MEM_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib memory error")),
-        Z_BUF_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib buf error")),
-        Z_VERSION_ERROR => Err(io::Error::new(io::ErrorKind::Other, "zlib version error")),
-        ret if ret < 0 => Err(io::Error::new(io::ErrorKind::Other, "unknown zlib error")),
+        Z_STREAM_ERROR => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib stream error".into()),
+        )),
+        Z_DATA_ERROR => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib data error".into()),
+        )),
+        Z_MEM_ERROR => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib mem error".into()),
+        )),
+        Z_BUF_ERROR => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib buf error".into()),
+        )),
+        Z_VERSION_ERROR => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib version error".into()),
+        )),
+        ret if ret < 0 => Err(io::Error::new(
+            io::ErrorKind::Other,
+            msg.unwrap_or_else(|| "zlib unknown error".into()),
+        )),
         ret => Ok(ret),
     }
 }
