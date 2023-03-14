@@ -40,7 +40,7 @@
 use std::{
     alloc::{self, Layout},
     cmp,
-    ffi::{CStr, CString},
+    ffi::CStr,
     io::{self, Read, Result},
     mem, ptr,
 };
