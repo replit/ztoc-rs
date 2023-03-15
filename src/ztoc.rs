@@ -6,7 +6,6 @@ use std::{
 };
 
 use chrono::NaiveDateTime;
-use sha2::{Digest, Sha256};
 use tar::Archive;
 
 use crate::zinfo::{GzipZInfoDecompressor, ZInfo};
@@ -58,17 +57,12 @@ pub struct CompressionInfo {
 
 impl From<ZInfo> for CompressionInfo {
     fn from(zinfo: ZInfo) -> Self {
-        let mut span_digests = Vec::with_capacity(zinfo.checkpoints.len());
         let mut checkpoints = Vec::new();
 
         checkpoints.extend_from_slice(&(zinfo.checkpoints.len() as u32).to_le_bytes());
         checkpoints.extend_from_slice(&(zinfo.span_size as u64).to_le_bytes());
 
         for span in &zinfo.checkpoints {
-            let mut hasher = Sha256::new();
-            hasher.update(span.window);
-            span_digests.push(format!("sha256:{:x}", hasher.finalize()));
-
             checkpoints.extend_from_slice(&span.r#in.to_le_bytes());
             checkpoints.extend_from_slice(&span.out.to_le_bytes());
             checkpoints.push(span.bits);
@@ -77,7 +71,7 @@ impl From<ZInfo> for CompressionInfo {
 
         CompressionInfo {
             max_span_id: zinfo.checkpoints.len() - 1,
-            span_digests,
+            span_digests: zinfo.span_digests,
             checkpoints,
         }
     }

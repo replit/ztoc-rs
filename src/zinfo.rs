@@ -50,6 +50,7 @@ use libz_sys::{
     inflate, inflateInit2_, uInt, z_stream, zlibVersion, Z_BLOCK, Z_BUF_ERROR, Z_DATA_ERROR,
     Z_MEM_ERROR, Z_NEED_DICT, Z_STREAM_END, Z_STREAM_ERROR, Z_VERSION_ERROR,
 };
+use sha2::{Digest, Sha256};
 
 // Since gzip is compressed with 32 KiB window size, WINDOW_SIZE is fixed
 const WINSIZE: usize = 32768;
@@ -82,6 +83,7 @@ impl std::fmt::Debug for GZipCheckpoint {
 pub struct ZInfo {
     pub version: i32,
     pub checkpoints: Vec<GZipCheckpoint>,
+    pub span_digests: Vec<String>,
     pub span_size: usize,
     pub total_in: usize,
     pub total_out: usize,
@@ -221,7 +223,10 @@ pub struct GzipZInfoDecompressor<R> {
 
     window: RingBuffer<u8, WINSIZE>,
     input: [u8; CHUNK],
+    input_size: usize,
     last_block: usize,
+
+    hasher: Sha256,
 }
 
 impl<R> GzipZInfoDecompressor<R>
@@ -235,6 +240,7 @@ where
         let zinfo = ZInfo {
             version: 2,
             checkpoints: Vec::new(),
+            span_digests: Vec::new(),
             span_size,
             total_in: 0,
             total_out: 0,
@@ -246,7 +252,9 @@ where
             zinfo,
             window: RingBuffer::new(),
             input: [0u8; CHUNK],
+            input_size: 0,
             last_block: 0,
+            hasher: Sha256::new(),
         })
     }
 
@@ -265,42 +273,76 @@ where
         unsafe {
             self.stream.next_out(buf);
         }
-        let mut read = 0;
+        let mut total_read = 0;
 
         while self.stream.available_out() > 0 {
             if self.stream.available_in() == 0 {
                 let count = self.reader.read(&mut self.input)?;
+                self.input_size = count;
                 unsafe {
                     self.stream.next_in(&mut self.input[..count]);
                 }
             }
 
-            let last_read = read;
-            self.zinfo.total_in += self.stream.available_in() as usize;
-            self.zinfo.total_out += self.stream.available_out() as usize;
-            read += self.stream.available_out() as usize;
+            let input_start = self.input_size - self.stream.available_in() as usize;
+            let last_out = total_read;
+
+            let mut input_read = self.stream.available_in();
+            let mut output_read = self.stream.available_out();
             let status = self.stream.inflate(Z_BLOCK)?;
-            self.zinfo.total_in -= self.stream.available_in() as usize;
-            self.zinfo.total_out -= self.stream.available_out() as usize;
-            read -= self.stream.available_out() as usize;
+            input_read -= self.stream.available_in();
+            output_read -= self.stream.available_out();
+
+            self.zinfo.total_in += input_read as usize;
+            self.zinfo.total_out += output_read as usize;
+            total_read += output_read as usize;
+            self.hasher
+                .update(&self.input[input_start..input_start + input_read as usize]);
+
             if status == Z_NEED_DICT {
                 return Err(io::Error::new(io::ErrorKind::Other, "unexpected need dict"));
             }
             if status == Z_STREAM_END {
-                return Ok(read);
+                // Push last span digest, if there is one pending.
+                if total_read > 0 {
+                    self.zinfo
+                        .span_digests
+                        .push(format!("sha256:{:x}", self.hasher.finalize_reset()));
+                }
+                return Ok(total_read);
             }
 
             // Copy the read data into the sliding window.
             self.window
-                .write(&buf[last_read..buf.len() - self.stream.available_out() as usize]);
+                .write(&buf[last_out..last_out + output_read as usize]);
 
+            // 128 indicates end of block, 64 indicates end of stream.
             if (self.stream.data_type() & 128) != 0
                 && (self.stream.data_type() & 64) == 0
                 && (self.zinfo.total_out == 0
                     || self.zinfo.total_out - self.last_block > self.zinfo.span_size)
             {
+                let unused_bits = (self.stream.data_type() & 7) as u8;
+                // Only push this after the first digest?
+                if !self.zinfo.checkpoints.is_empty() {
+                    self.zinfo
+                        .span_digests
+                        .push(format!("sha256:{:x}", self.hasher.finalize_reset()));
+                } else {
+                    self.hasher.reset();
+                }
+                // If we're staddling a byte from the input, we'll include the full byte
+                // in the next digest.
+                if unused_bits > 0 {
+                    // Not sure if this will happen in the wild.
+                    assert!(input_start + input_read as usize > 0);
+                    self.hasher.update(
+                        &self.input[input_start + input_read as usize - 1
+                            ..input_start + input_read as usize],
+                    );
+                }
                 let mut checkpoint = GZipCheckpoint {
-                    bits: (self.stream.data_type() as u8) & 7,
+                    bits: unused_bits,
                     r#in: self.zinfo.total_in,
                     out: self.zinfo.total_out,
                     window: [0u8; WINSIZE],
@@ -313,7 +355,7 @@ where
             }
         }
 
-        Ok(read)
+        Ok(total_read)
     }
 }
 

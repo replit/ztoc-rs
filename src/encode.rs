@@ -166,9 +166,23 @@ mod test {
             expected_compression_info.checkpoints().unwrap().bytes(),
         );
         assert_eq!(
-            decoded_compression_info.span_digests().unwrap().bytes(),
-            expected_compression_info.span_digests().unwrap().bytes(),
+            decoded_compression_info.span_digests().unwrap().len(),
+            expected_compression_info.span_digests().unwrap().len(),
         );
+        for (i, (decoded_digest, expected_digest)) in decoded_compression_info
+            .span_digests()
+            .unwrap()
+            .into_iter()
+            .zip(
+                expected_compression_info
+                    .span_digests()
+                    .unwrap()
+                    .into_iter(),
+            )
+            .enumerate()
+        {
+            assert_eq!(decoded_digest, expected_digest, "index {}", i);
+        }
 
         let decoded_toc = decoded.toc().unwrap();
         let expected_toc = expected.toc().unwrap();
