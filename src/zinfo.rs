@@ -273,7 +273,13 @@ where
         unsafe {
             self.stream.next_out(buf);
         }
+        // Total read tracks how many bytes have been placed into the buffer provided by the
+        // caller.
         let mut total_read = 0;
+
+        // Pending span tracks if there is a span digest that needs to be pushed when the stream
+        // ends.
+        let mut pending_span = false;
 
         while self.stream.available_out() > 0 {
             if self.stream.available_in() == 0 {
@@ -296,6 +302,9 @@ where
             self.zinfo.total_in += input_read as usize;
             self.zinfo.total_out += output_read as usize;
             total_read += output_read as usize;
+            if input_read != 0 {
+                pending_span = true;
+            }
             self.hasher
                 .update(&self.input[input_start..input_start + input_read as usize]);
 
@@ -304,7 +313,7 @@ where
             }
             if status == Z_STREAM_END {
                 // Push last span digest, if there is one pending.
-                if total_read > 0 {
+                if pending_span {
                     self.zinfo
                         .span_digests
                         .push(format!("sha256:{:x}", self.hasher.finalize_reset()));
@@ -325,6 +334,7 @@ where
                 let unused_bits = (self.stream.data_type() & 7) as u8;
                 // Only push this after the first digest?
                 if !self.zinfo.checkpoints.is_empty() {
+                    pending_span = false;
                     self.zinfo
                         .span_digests
                         .push(format!("sha256:{:x}", self.hasher.finalize_reset()));
