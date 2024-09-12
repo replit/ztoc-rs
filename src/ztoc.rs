@@ -5,7 +5,7 @@ use std::{
     str::Utf8Error,
 };
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime};
 use tar::Archive;
 
 use crate::zinfo::{GzipZInfoDecompressor, ZInfo};
@@ -123,8 +123,9 @@ impl<R: Read> TryFrom<tar::Entry<'_, R>> for FileMetadata {
                 .groupname()
                 .map_err(map_utf8_error)?
                 .map(Into::into),
-            mod_time: NaiveDateTime::from_timestamp_opt(entry.header().mtime()? as i64, 0)
-                .ok_or(io::Error::new(io::ErrorKind::InvalidData, "invalid mtime"))?,
+            mod_time: DateTime::from_timestamp(entry.header().mtime()? as i64, 0)
+                .ok_or(io::Error::new(io::ErrorKind::InvalidData, "invalid mtime"))?
+                .naive_utc(),
             dev_major: None,
             dev_minor: None,
             // lol maybe I went too far...
