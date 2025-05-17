@@ -17,8 +17,17 @@
     };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, advisory-db, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      crane,
+      flake-utils,
+      advisory-db,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -28,13 +37,16 @@
 
         craneLib = crane.lib.${system};
 
-        src = ./.;
+        src = builtins.path {
+          path = ./.;
+          name = "source";
+        };
 
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {
           inherit src;
 
-          buildInputs = [];
+          buildInputs = [ ];
           nativeBuildInputs = [ pkgs.flatbuffers ];
         };
 
@@ -44,55 +56,72 @@
 
         # Build the actual crate itself, reusing the dependency
         # artifacts from above.
-        ztocrs = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-        });
+        ztocrs = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+          }
+        );
       in
       {
-        checks = {
-          # Build the crate as part of `nix flake check` for convenience
-          inherit ztocrs;
+        checks =
+          {
+            # Build the crate as part of `nix flake check` for convenience
+            inherit ztocrs;
 
-          # Run clippy (and deny all warnings) on the crate source,
-          # again, resuing the dependency artifacts from above.
-          #
-          # Note that this is done as a separate derivation so that
-          # we can block the CI if there are issues here, but not
-          # prevent downstream consumers from building our crate by itself.
-          ztocrs-clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-          });
+            # Run clippy (and deny all warnings) on the crate source,
+            # again, resuing the dependency artifacts from above.
+            #
+            # Note that this is done as a separate derivation so that
+            # we can block the CI if there are issues here, but not
+            # prevent downstream consumers from building our crate by itself.
+            ztocrs-clippy = craneLib.cargoClippy (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+              }
+            );
 
-          ztocrs-doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
+            ztocrs-doc = craneLib.cargoDoc (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+              }
+            );
 
-          # Check formatting
-          ztocrs-fmt = craneLib.cargoFmt {
-            inherit src;
+            # Check formatting
+            ztocrs-fmt = craneLib.cargoFmt {
+              inherit src;
+            };
+
+            # Audit dependencies
+            ztocrs-audit = craneLib.cargoAudit {
+              inherit src advisory-db;
+            };
+
+            # Run tests with cargo-nextest
+            # Consider setting `doCheck = false` on `ztocrs` if you do not want
+            # the tests to run twice
+            ztocrs-nextest = craneLib.cargoNextest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                partitions = 1;
+                partitionType = "count";
+              }
+            );
+          }
+          // lib.optionalAttrs (system == "x86_64-linux") {
+            # NB: cargo-tarpaulin only supports x86_64 systems
+            # Check code coverage (note: this will not upload coverage anywhere)
+            ztocrs-coverage = craneLib.cargoTarpaulin (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+              }
+            );
           };
-
-          # Audit dependencies
-          ztocrs-audit = craneLib.cargoAudit {
-            inherit src advisory-db;
-          };
-
-          # Run tests with cargo-nextest
-          # Consider setting `doCheck = false` on `ztocrs` if you do not want
-          # the tests to run twice
-          ztocrs-nextest = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-            partitions = 1;
-            partitionType = "count";
-          });
-        } // lib.optionalAttrs (system == "x86_64-linux") {
-          # NB: cargo-tarpaulin only supports x86_64 systems
-          # Check code coverage (note: this will not upload coverage anywhere)
-          ztocrs-coverage = craneLib.cargoTarpaulin (commonArgs // {
-            inherit cargoArtifacts;
-          });
-        };
 
         packages.default = ztocrs;
 
@@ -111,5 +140,6 @@
             rustfmt
           ];
         };
-      });
+      }
+    );
 }
